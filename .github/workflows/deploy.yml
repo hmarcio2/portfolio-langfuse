@@ -1,0 +1,53 @@
+# Deploy do Langfuse na VPS da Hostinger. Não há imagem para construir: as imagens vêm dos registros oficiais.
+# Roda manualmente (Actions > Deploy > Run workflow). Os segredos ficam só no /opt/apps/langfuse/.env da VPS.
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-langfuse
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Enviar arquivos e atualizar o serviço
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ vars.VPS_PORT || '22' }}
+        run: |
+          set -euo pipefail
+          SSH="ssh -i $HOME/.ssh/deploy_key -p $VPS_PORT -o StrictHostKeyChecking=yes $VPS_USER@$VPS_HOST"
+          SCP="scp -i $HOME/.ssh/deploy_key -P $VPS_PORT -o StrictHostKeyChecking=yes"
+          APP_DIR=/opt/apps/langfuse
+
+          $SSH "mkdir -p $APP_DIR/scripts"
+          $SCP compose.yml "$VPS_USER@$VPS_HOST:$APP_DIR/compose.yml"
+          $SCP scripts/gen_env.py scripts/check_memory_budget.py "$VPS_USER@$VPS_HOST:$APP_DIR/scripts/"
+          $SCP deploy/langfuse.caddy "$VPS_USER@$VPS_HOST:/opt/edge/sites/langfuse.caddy"
+          $SSH "cd $APP_DIR && test -f .env || { echo 'Falta $APP_DIR/.env. Crie com: cd $APP_DIR && python3 scripts/gen_env.py --email VOCE@EXEMPLO.COM --domain SEUDOMINIO'; exit 1; }"
+          # o Langfuse tem 8 GiB da VPS de 16 GB; o resto é dos apps. Falha aqui se o .env subiu algum teto além disso.
+          $SSH "cd $APP_DIR && python3 scripts/check_memory_budget.py"
+          # primeiro start: migrações do Postgres e do ClickHouse demoram (até alguns minutos)
+          $SSH "cd $APP_DIR && docker compose -f compose.yml pull && docker compose -f compose.yml up -d --wait --wait-timeout 600 --remove-orphans"
+          $SSH "docker exec edge-caddy caddy reload --config /etc/caddy/Caddyfile"
+          $SSH "docker image prune -f"

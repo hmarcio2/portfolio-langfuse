@@ -1,0 +1,12 @@
+# Desenvolvimento: UI em http://localhost:3300 (somente no seu computador) e sem a rede "edge".
+#   python scripts/gen_env.py --email voce@exemplo.com          # cria o .env com segredos aleatórios (DOMAIN=localhost)
+#   docker compose -f compose.yml -f compose.local.yml up -d
+#
+# A porta padrão é 3300 (e não 3000) para não colidir com o Langfuse do projeto Chatbot, se ele estiver no ar.
+services:
+  langfuse-web:
+    environment:
+      NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3300}
+    networks: !override [default]
+    ports:
+      - "127.0.0.1:${LANGFUSE_PORT:-3300}:3000"
